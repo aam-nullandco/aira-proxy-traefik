@@ -1,0 +1,104 @@
+version: "3.9"
+
+networks:
+  default:
+    driver: bridge
+  websrv:
+    name: websrv
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.10.10.0/24
+  isolated:
+    name: isolated
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.20.30.0/24
+  proxies:
+    name: proxies
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.99.99.0/24
+  dhcp-tier:
+    external: true
+
+x-common-keys-core: &common-keys-core
+  networks:
+    - websrv
+  security_opt:
+    - no-new-privileges:true
+  restart: always
+
+services:
+  traefik:
+    <<: *common-keys-core
+    image: traefik:v3.0
+    container_name: traefik
+    command:
+      - --log.level=DEBUG
+      - --global.sendAnonymousUsage=false
+      - --api.dashboard=true
+      - --api=true
+      - --api.insecure=false
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --providers.docker.network=websrv
+      - --serversTransport.insecureSkipVerify=true
+      - --entrypoints.web.address=:80
+      - --entrypoints.web.http.redirections.entrypoint.to=websecure
+      - --entrypoints.web.http.redirections.entrypoint.scheme=https
+      - --entrypoints.websecure.address=:443
+      - --entrypoints.websecure.asDefault=true
+      - --entrypoints.websecure.http.tls.certresolver=dns-cloudflare
+      - --entrypoints.https.http.tls.options=tls-opts@file
+      - --entrypoints.https.forwardedHeaders.trustedIPs=$CLOUDFLARE_IPS,$LOCAL_IPS
+      - --accessLog=true
+      - --accessLog.filePath=/logs/access.json
+      - --accessLog.bufferingSize=100 # Configuring a buffer of 100 lines
+      - --accessLog.filters.statusCodes=204-299,400-499,500-599
+      - --accessLog.format=json
+      - --providers.file.directory=/rules
+      - --providers.file.watch=true
+      - --certificatesresolvers.dns-cloudflare.acme.dnschallenge=true
+      - --certificatesresolvers.dns-cloudflare.acme.dnschallenge.provider=cloudflare
+      - --certificatesresolvers.dns-cloudflare.acme.dnschallenge.resolvers=1.1.1.1:53,1.0.0.1:53
+      - --certificatesresolvers.dns-cloudflare.acme.dnschallenge.delayBeforeCheck=90 # To delay DNS check and reduce LE hitrate
+      - --certificatesresolvers.dns-cloudflare.acme.email=$ACME_EMAIL
+      - --certificatesresolvers.dns-cloudflare.acme.storage=/letsencrypt/acme.json
+    ports:
+      - "1423:80"
+      - "8443:443"
+      - "8080:8080"
+    dns:
+      - $CLOUDFLAREDNS
+      - $PRIMARYDNS
+      - $SECONDARYDNS
+    volumes:
+      - $DATADIR/letsencrypt:/letsencrypt
+      - $DATADIR/traefik_rules:/rules
+      - $DATADIR/traefik_certs:/certs:ro
+      - $LOGDIR:/logs
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      - TZ=$TZ
+      - CF_API_EMAIL=$CLOUDFLARE_EMAIL
+      - CF_API_KEY=$CLOUDFLARE_API_KEY
+      - DOMAINNAME_CLOUD_SERVER # Passing the domain name to the traefik container to be able to use the variable in rules.
+    networks:
+      websrv:
+        ipv4_address: 10.10.10.254
+      isolated:
+        ipv4_address: 10.20.30.254
+      proxies:
+        ipv4_address: 10.99.99.254
+    depends_on:
+      - cf-ddns
+      - cf-companion
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.traefik-rtr.rule=Host(`traefik.domain1.com`)"
+      - "traefik.http.routers.traefik-rtr.entrypoints=websecure"
+      - "traefik.http.routers.traefik-rtr.service=api@internal"
+      - "traefik.http.routers.traefik-rtr.middlewares=middlewares-basic-auth@file,middlewares-rate-limit@file,middlewares-https-redirectscheme@file,middlewares-secure-headers@file"

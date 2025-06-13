@@ -1,0 +1,18 @@
+http:
+  routers:
+    rtr-test-1:
+      rule: "Host(`test.domain1.com`)"
+      middlewares:
+        - chain-no-auth
+      service: svc-rpi5-test
+    rtr-test-2:
+      rule: "Host(`test.domain2.com`)"
+      middlewares:
+        - chain-no-auth
+      service: svc-rpi5-test
+
+  services:
+    svc-rpi5-test:
+      loadBalancer:
+        servers:
+          - url: "http://192.168.0.60:1110"
